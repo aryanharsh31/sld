@@ -1,4 +1,4 @@
-import { localDB, Note, Folder } from './localDatabase';
+import { localDB } from './localDatabase';
 import { authService } from './authService';
 
 export interface NoteData {
@@ -87,42 +87,16 @@ class NotesService {
    * Update a folder
    */
   async updateFolder(folderId: string, updates: Partial<{ name: string; color: string; icon: string }>): Promise<FolderData> {
-    await connectDB();
-    
-    const currentUser = await authService.getCurrentUser();
-    if (!currentUser) {
-      throw new Error('User not authenticated');
-    }
-
-    const folder = await Folder.findOneAndUpdate(
-      { _id: folderId, userId: currentUser.id },
-      updates,
-      { new: true }
-    );
+    const folders = await this.getFolders();
+    const folder = folders.find(item => item.id === folderId);
 
     if (!folder) {
       throw new Error('Folder not found');
     }
 
-    const notes = await Note.find({ folderId: folder._id }).sort({ updatedAt: -1 });
-
     return {
-      id: folder._id.toString(),
-      name: folder.name,
-      color: folder.color,
-      icon: folder.icon,
-      notes: notes.map(note => ({
-        id: note._id.toString(),
-        title: note.title,
-        content: note.content,
-        type: note.type,
-        color: note.color,
-        folderId: folder._id.toString(),
-        createdAt: note.createdAt,
-        updatedAt: note.updatedAt,
-      })),
-      createdAt: folder.createdAt,
-      updatedAt: folder.updatedAt,
+      ...folder,
+      ...updates,
     };
   }
 
@@ -130,22 +104,12 @@ class NotesService {
    * Delete a folder and all its notes
    */
   async deleteFolder(folderId: string): Promise<void> {
-    await connectDB();
-    
     const currentUser = await authService.getCurrentUser();
     if (!currentUser) {
       throw new Error('User not authenticated');
     }
 
-    // Delete all notes in the folder first
-    await Note.deleteMany({ folderId, userId: currentUser.id });
-    
-    // Delete the folder
-    const result = await Folder.deleteOne({ _id: folderId, userId: currentUser.id });
-    
-    if (result.deletedCount === 0) {
-      throw new Error('Folder not found');
-    }
+    await localDB.deleteFolder(folderId);
   }
 
   /**
@@ -193,78 +157,56 @@ class NotesService {
    * Delete a note
    */
   async deleteNote(noteId: string): Promise<void> {
-    await connectDB();
-    
     const currentUser = await authService.getCurrentUser();
     if (!currentUser) {
       throw new Error('User not authenticated');
     }
 
-    const result = await Note.deleteOne({ _id: noteId, userId: currentUser.id });
-    
-    if (result.deletedCount === 0) {
-      throw new Error('Note not found');
-    }
+    await localDB.deleteNote(noteId);
   }
 
   /**
    * Get a specific note
    */
   async getNote(noteId: string): Promise<NoteData> {
-    await connectDB();
-    
     const currentUser = await authService.getCurrentUser();
     if (!currentUser) {
       throw new Error('User not authenticated');
     }
 
-    const note = await Note.findOne({ _id: noteId, userId: currentUser.id });
-    
-    if (!note) {
-      throw new Error('Note not found');
+    const folders = await this.getFolders();
+    for (const folder of folders) {
+      const note = folder.notes.find(item => item.id === noteId);
+      if (note) {
+        return note;
+      }
     }
 
-    return {
-      id: note._id.toString(),
-      title: note.title,
-      content: note.content,
-      type: note.type,
-      color: note.color,
-      folderId: note.folderId.toString(),
-      createdAt: note.createdAt,
-      updatedAt: note.updatedAt,
-    };
+    throw new Error('Note not found');
   }
 
   /**
    * Search notes by content or title
    */
   async searchNotes(query: string): Promise<NoteData[]> {
-    await connectDB();
-    
     const currentUser = await authService.getCurrentUser();
     if (!currentUser) {
       throw new Error('User not authenticated');
     }
 
-    const notes = await Note.find({
-      userId: currentUser.id,
-      $or: [
-        { title: { $regex: query, $options: 'i' } },
-        { content: { $regex: query, $options: 'i' } }
-      ]
-    }).sort({ updatedAt: -1 });
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return [];
+    }
 
-    return notes.map(note => ({
-      id: note._id.toString(),
-      title: note.title,
-      content: note.content,
-      type: note.type,
-      color: note.color,
-      folderId: note.folderId.toString(),
-      createdAt: note.createdAt,
-      updatedAt: note.updatedAt,
-    }));
+    const folders = await this.getFolders();
+    return folders
+      .flatMap(folder => folder.notes)
+      .filter(note =>
+        note.title.toLowerCase().includes(normalizedQuery) ||
+        note.content.toLowerCase().includes(normalizedQuery)
+      )
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   }
 
   /**

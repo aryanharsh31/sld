@@ -20,6 +20,8 @@ import Slider from '@react-native-community/slider';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { voiceRecognitionService, VoiceRecognitionCallbacks } from '../features/VoiceRecognitionService';
 import { notesService } from '../../services/notesService';
+import { buildNotePayload, parseNotePayload, serializeNotePayload } from '../../services/notePayload';
+import { piIntegrationService } from '../../services/piIntegrationService';
  
 // A4 aspect ratio
 const A4_ASPECT_RATIO = 1 / Math.sqrt(2);
@@ -34,13 +36,13 @@ export interface Note {
   updatedAt: Date;
   type: 'text' | 'handwritten';
   color?: string;
-  folderId?: number;
+  folderId?: string | number;
 }
 
 interface NotesScreenProps {
   initialNotes?: Note[];
   onBack?: () => void;
-  onSave?: (noteContent: string, folderId: number, noteId: number) => void;
+  onSave?: (noteContent: string, folderId: string | number, noteId: string | number) => void;
   onNoteChange?: (note: string) => void;
   folders?: any[];
   setFolders?: any;
@@ -69,6 +71,7 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
   // Voice recognition state
   const [isListening, setIsListening] = useState(false);
   const [voiceText, setVoiceText] = useState('');
+  const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceEnabled, setVoiceEnabled] = useState(false);
 
   // Pen color and width state
@@ -82,18 +85,10 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
 
   useEffect(() => {
     if (initialNotes.length > 0 && initialNotes[0].content) {
-      try {
-        const parsed = JSON.parse(initialNotes[0].content);
-        if (Array.isArray(parsed)) {
-          // Handle array of strokes for each page
-          setPages(parsed.map(pageStrokes => ({ strokes: Array.isArray(pageStrokes) ? pageStrokes : [] })));
-        }
-      } catch (e) {
-        // Content might not be JSON, or might be malformed.
-        // For now, we just log the error and start with a blank page.
-        console.warn("Could not parse initial note content:", e);
-        setPages([{ strokes: [] }]);
-      }
+      const payload = parseNotePayload(initialNotes[0].content);
+      setPages(payload.pages.length > 0 ? payload.pages : [{ strokes: [] }]);
+      setVoiceTranscript(payload.voiceTranscript || '');
+      setPendingText(payload.combinedText || payload.recognizedText || '');
     }
   }, [initialNotes]);
 
@@ -152,19 +147,32 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
     try {
       const currentNote = initialNotes?.[0];
       if (currentNote && currentNote.folderId && currentNote.id) {
-        // Save all pages as JSON string
-        const allPagesData = JSON.stringify(pages.map(page => page.strokes));
+        const payload = buildNotePayload({
+          pages,
+          recognizedText: recognitionResults[0]?.text || pendingText,
+          voiceTranscript,
+          source: 'tablet',
+        });
+        const serializedPayload = serializeNotePayload(payload);
         
-        // Use notesService to save to MongoDB
         await notesService.updateNote(String(currentNote.id), {
-          content: allPagesData
+          content: serializedPayload
+        });
+
+        await piIntegrationService.submitRecognizedNote({
+          noteId: String(currentNote.id),
+          folderId: String(currentNote.folderId),
+          pages: payload.pages,
+          recognizedText: payload.recognizedText,
+          voiceTranscript: payload.voiceTranscript,
+          combinedText: payload.combinedText,
+          capturedAt: payload.updatedAt,
         });
         
         Alert.alert('Success', 'Note saved successfully!');
         
-        // Call the original onSave if provided for navigation
         if (onSave) {
-          onSave(allPagesData, Number(currentNote.folderId), Number(currentNote.id));
+          onSave(serializedPayload, Number(currentNote.folderId), Number(currentNote.id));
         }
       } else {
         Alert.alert("Save Error", "Cannot save note. Missing folder or note ID.");
@@ -209,8 +217,9 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
 
   const insertVoiceText = () => {
     if (voiceText.trim()) {
-      // Add voice text to pending text for handwriting recognition
-      setPendingText(prev => prev + ' ' + voiceText.trim());
+      const cleanText = voiceText.trim();
+      setVoiceTranscript(prev => [prev, cleanText].filter(Boolean).join('\n'));
+      setPendingText(prev => [prev, cleanText].filter(Boolean).join('\n'));
       setVoiceText('');
     }
   };

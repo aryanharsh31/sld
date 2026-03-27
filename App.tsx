@@ -27,6 +27,7 @@ import AuthScreen from './components/login/AuthScreen';
 import { authService } from './services/authService';
 import { notesService, FolderData } from './services/notesService';
 import Settings from './components/screens/Settings';
+import { getNotePreview } from './services/notePayload';
 
 const Stack = createStackNavigator();
 const MainStack = createStackNavigator();
@@ -41,7 +42,7 @@ interface Note {
   updatedAt: Date;
   type: 'text' | 'handwritten';
   color?: string;
-  folderId?: number;
+  folderId?: string | number;
 }
 
 // --- Persistence helpers moved from folders.tsx ---
@@ -95,7 +96,7 @@ async function loadFoldersFromStorage(): Promise<Folder[]> {
 }
 
 
-function NotesListScreen({ folder, folders, setFolders, onBack, onOpenNote }: { folder: Folder, folders: Folder[], setFolders: React.Dispatch<React.SetStateAction<Folder[]>>, onBack: () => void, onOpenNote: (folderId: number, noteId: number) => void }) {
+function NotesListScreen({ folder, folders, setFolders, onBack, onOpenNote }: { folder: Folder, folders: Folder[], setFolders: React.Dispatch<React.SetStateAction<Folder[]>>, onBack: () => void, onOpenNote: (folderId: string | number, noteId: string | number) => void }) {
   const [showCreateNoteModal, setShowCreateNoteModal] = useState(false);
   const [newNoteName, setNewNoteName] = useState('');
   const [newNoteColor, setNewNoteColor] = useState('#FF6B6B'); // Default color
@@ -191,23 +192,7 @@ function NotesListScreen({ folder, folders, setFolders, onBack, onOpenNote }: { 
       </TouchableOpacity>
       <ScrollView contentContainerStyle={styles.notesGridContainer}>
         {notes.map((note, idx) => {
-          // Determine if the note content is handwritten or empty
-          let notePreviewText = 'Empty Note';
-          try {
-            const parsedContent = JSON.parse(note.content);
-            if (Array.isArray(parsedContent) && parsedContent.length > 0) {
-              // Check if the first page has strokes
-              const firstPageStrokes = parsedContent[0]?.strokes || parsedContent[0]; // Handle both {strokes: []} and direct []
-              if (Array.isArray(firstPageStrokes) && firstPageStrokes.length > 0) {
-                notePreviewText = 'Handwritten Note';
-              }
-            }
-          } catch (e) {
-            // If parsing fails, it might be plain text or malformed JSON
-            if (typeof note.content === 'string' && note.content.length > 0) {
-              notePreviewText = note.content.substring(0, 50) + (note.content.length > 50 ? '...' : '');
-            }
-          }
+          const notePreviewText = getNotePreview(note.content);
 
           return ( // Each note is a TouchableOpacity acting as a card
             <TouchableOpacity
@@ -217,7 +202,7 @@ function NotesListScreen({ folder, folders, setFolders, onBack, onOpenNote }: { 
             >
               <View style={styles.noteGridCardContent}>
                 <Text style={[styles.noteGridCardTitle, { color: '#fff' }]} numberOfLines={2}>
-                  {note.name}
+                  {note.title || (note as any).name}
                 </Text>
                 <Text style={[styles.noteGridCardPreview, { color: 'rgba(255, 255, 255, 0.8)' }]} numberOfLines={2}>
                   {notePreviewText}
@@ -461,14 +446,14 @@ function MainApp() {
               folders={folders}
               setFolders={setFolders}
               onBack={() => navigation.goBack()}
-              onOpenNote={(folderId: number, noteId: number) => navigation.navigate('Notes', { folderId, noteId })}
+              onOpenNote={(folderId: string | number, noteId: string | number) => navigation.navigate('Notes', { folderId, noteId })}
             />
           );
         }}
       </MainStack.Screen>
       <MainStack.Screen name="Notes">
         {({ navigation, route }) => {
-          const { folderId, noteId } = (route.params as { folderId?: number | null, noteId?: number | null }) || { folderId: null, noteId: null };
+          const { folderId, noteId } = (route.params as { folderId?: string | number | null, noteId?: string | number | null }) || { folderId: null, noteId: null };
 
           useEffect(() => {
             if (folderId === null || noteId === null) {
@@ -483,9 +468,9 @@ function MainApp() {
           const note = noteId ? folder?.notes.find(n => n.id === noteId) : null;
           return (
           <NotesScreen
-            initialNotes={note ? [{ id: String(note.id), title: note.name, content: note.content, color: note.color, folderId: folder.id, createdAt: new Date(), updatedAt: new Date(), type: 'handwritten' }] : []}
+            initialNotes={note ? [{ id: String(note.id), title: note.title || (note as any).name, content: note.content, color: note.color, folderId: folder.id as any, createdAt: new Date(), updatedAt: new Date(), type: 'handwritten' }] : []}
             onBack={() => navigation.goBack()}
-            onSave={(noteContent: string, targetFolderId: number, targetNoteId: number) => { // targetNoteId is now correctly passed
+            onSave={(noteContent: string, targetFolderId: string | number, targetNoteId: string | number) => { // targetNoteId is now correctly passed
               setFolders((prev) => prev.map(f => {
                 if (f.id !== targetFolderId) return f;
                 const updatedNotes = (f.notes || []).map(n => 
