@@ -28,6 +28,7 @@ import { authService } from './services/authService';
 import { notesService, FolderData } from './services/notesService';
 import Settings from './components/screens/Settings';
 import { getNotePreview } from './services/notePayload';
+import { progressTrackingService } from './services/progressTrackingService';
 
 const Stack = createStackNavigator();
 const MainStack = createStackNavigator();
@@ -403,6 +404,7 @@ function MainApp() {
         'handwritten',
         '#FFEAA7'
       );
+      await progressTrackingService.recordNoteCreated();
 
       // Refresh folders to include the new note
       const updatedFolders = await notesService.getFolders();

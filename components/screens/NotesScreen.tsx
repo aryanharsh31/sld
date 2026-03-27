@@ -22,6 +22,9 @@ import { voiceRecognitionService, VoiceRecognitionCallbacks } from '../features/
 import { notesService } from '../../services/notesService';
 import { buildNotePayload, parseNotePayload, serializeNotePayload } from '../../services/notePayload';
 import { piIntegrationService } from '../../services/piIntegrationService';
+import { appProfileService } from '../../services/appProfileService';
+import { progressTrackingService } from '../../services/progressTrackingService';
+import { languageProcessingService } from '../../services/languageProcessingService';
  
 // A4 aspect ratio
 const A4_ASPECT_RATIO = 1 / Math.sqrt(2);
@@ -73,6 +76,10 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
   const [voiceText, setVoiceText] = useState('');
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState('en');
+  const [speechFeedbackEnabled, setSpeechFeedbackEnabled] = useState(true);
+  const [simplificationEnabled, setSimplificationEnabled] = useState(true);
+  const [assistiveProfileLoaded, setAssistiveProfileLoaded] = useState(false);
 
   // Pen color and width state
   const [penColor, setPenColor] = useState('#222');
@@ -89,8 +96,21 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
       setPages(payload.pages.length > 0 ? payload.pages : [{ strokes: [] }]);
       setVoiceTranscript(payload.voiceTranscript || '');
       setPendingText(payload.combinedText || payload.recognizedText || '');
+      if (payload.languageCode) setSelectedLanguage(payload.languageCode);
     }
   }, [initialNotes]);
+
+  useEffect(() => {
+    const loadAssistiveProfile = async () => {
+      const profile = await appProfileService.getProfile();
+      setSelectedLanguage(profile.preferredLanguage);
+      setSpeechFeedbackEnabled(profile.speechFeedbackEnabled);
+      setSimplificationEnabled(profile.simplificationEnabled);
+      setAssistiveProfileLoaded(true);
+    };
+
+    loadAssistiveProfile().catch(error => console.error('Failed to load assistive profile', error));
+  }, []);
 
   // Handler for updating strokes of the current page
   const handleSetStrokes = (pageIndex: number, newStrokes: any[]) => {
@@ -147,10 +167,21 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
     try {
       const currentNote = initialNotes?.[0];
       if (currentNote && currentNote.folderId && currentNote.id) {
+        const rawCombinedText = [recognitionResults[0]?.text || pendingText, voiceTranscript]
+          .filter(Boolean)
+          .join('\n')
+          .trim();
+        const languageResult = languageProcessingService.processText(
+          rawCombinedText,
+          selectedLanguage,
+          simplificationEnabled
+        );
         const payload = buildNotePayload({
           pages,
-          recognizedText: recognitionResults[0]?.text || pendingText,
+          languageCode: languageResult.languageCode,
+          recognizedText: languageResult.cleanedText,
           voiceTranscript,
+          simplifiedText: languageResult.simplifiedText,
           source: 'tablet',
         });
         const serializedPayload = serializeNotePayload(payload);
@@ -163,16 +194,21 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
           noteId: String(currentNote.id),
           folderId: String(currentNote.folderId),
           pages: payload.pages,
+          languageCode: payload.languageCode,
           recognizedText: payload.recognizedText,
           voiceTranscript: payload.voiceTranscript,
           combinedText: payload.combinedText,
+          simplifiedText: payload.simplifiedText,
           capturedAt: payload.updatedAt,
         });
+
+        await progressTrackingService.recordNoteSaved();
+        await progressTrackingService.recordHandwritingRecognition(payload.recognizedText || '');
         
         Alert.alert('Success', 'Note saved successfully!');
         
         if (onSave) {
-          onSave(serializedPayload, Number(currentNote.folderId), Number(currentNote.id));
+          onSave(serializedPayload, currentNote.folderId, currentNote.id);
         }
       } else {
         Alert.alert("Save Error", "Cannot save note. Missing folder or note ID.");
@@ -192,7 +228,7 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
 
     try {
       const success = await voiceRecognitionService.startWithOptions({
-        language: 'en-US',
+        language: languageProcessingService.getLanguage(selectedLanguage).speechLocale,
         continuous: false,
         interimResults: true,
         maxAlternatives: 1,
@@ -221,13 +257,17 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
       setVoiceTranscript(prev => [prev, cleanText].filter(Boolean).join('\n'));
       setPendingText(prev => [prev, cleanText].filter(Boolean).join('\n'));
       setVoiceText('');
+      progressTrackingService.recordVoiceCapture(cleanText).catch(error => console.error('Failed to record voice capture', error));
     }
   };
 
   const speakText = async (text: string) => {
+    if (!speechFeedbackEnabled) {
+      return;
+    }
     try {
       await voiceRecognitionService.speak(text, {
-        language: 'en-US',
+        language: languageProcessingService.getLanguage(selectedLanguage).speechLocale,
         rate: 1.0,
         pitch: 1.0,
       });
@@ -341,6 +381,17 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
     AsyncStorage.setItem('digitalInkApp:recognitionSettings', JSON.stringify(settings)).catch(() => {});
   }, [recognitionEnabled, recognitionMode, wordGapMs, autoAlignText]);
 
+  useEffect(() => {
+    if (!assistiveProfileLoaded) {
+      return;
+    }
+    appProfileService.updateProfile({
+      preferredLanguage: selectedLanguage,
+      speechFeedbackEnabled,
+      simplificationEnabled,
+    }).catch(error => console.error('Failed to persist assistive profile settings', error));
+  }, [assistiveProfileLoaded, selectedLanguage, speechFeedbackEnabled, simplificationEnabled]);
+
   return (
     <View style={styles.container}>
       <Toolbar
@@ -376,7 +427,7 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
         {pages.map((page, index) => (
           <View key={index} style={styles.pageContainer}>
             <DigitalInkCanvas
-              languageTag="en-US"
+              languageTag={languageProcessingService.getLanguage(selectedLanguage).inkLocale}
               onRecognitionResult={setRecognitionResults}
               undoRef={undoRef}
               redoRef={redoRef}
@@ -431,6 +482,31 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
         <View style={styles.modalOverlay}>
           <View style={styles.settingsModal}>
             <Text style={styles.settingsTitle}>Settings</Text>
+            <View style={styles.settingsBlock}>
+              <Text style={styles.sectionTitle}>Language Support</Text>
+              <View style={styles.languageChipRow}>
+                {languageProcessingService.getSupportedLanguages().map(language => (
+                  <TouchableOpacity
+                    key={language.code}
+                    style={[
+                      styles.languageChip,
+                      selectedLanguage === language.code && styles.languageChipActive
+                    ]}
+                    onPress={() => setSelectedLanguage(language.code)}
+                    activeOpacity={0.8}
+                  >
+                    <Text
+                      style={[
+                        styles.languageChipText,
+                        selectedLanguage === language.code && styles.languageChipTextActive
+                      ]}
+                    >
+                      {language.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
             <View style={styles.settingsRow}>
               <Text style={styles.settingsLabel}>Recognition</Text>
               <TouchableOpacity
@@ -504,8 +580,32 @@ export default function NotesScreen({ initialNotes = [], onBack, onSave, onNoteC
                     </Text>
                   </TouchableOpacity>
                 </View>
+                <View style={styles.settingsRow}>
+                  <Text style={styles.settingsLabel}>Text Simplification</Text>
+                  <TouchableOpacity
+                    style={[styles.switchPill, simplificationEnabled && styles.switchPillActive]}
+                    onPress={() => setSimplificationEnabled(v => !v)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.switchPillText, simplificationEnabled && styles.switchPillTextActive]}>
+                      {simplificationEnabled ? 'On' : 'Off'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </>
             )}
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsLabel}>Audio Feedback</Text>
+              <TouchableOpacity
+                style={[styles.switchPill, speechFeedbackEnabled && styles.switchPillActive]}
+                onPress={() => setSpeechFeedbackEnabled(v => !v)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.switchPillText, speechFeedbackEnabled && styles.switchPillTextActive]}>
+                  {speechFeedbackEnabled ? 'On' : 'Off'}
+                </Text>
+              </TouchableOpacity>
+            </View>
             <TouchableOpacity style={styles.closeButton} onPress={() => setSettingsVisible(false)}>
               <Text style={styles.closeButtonText}>Close</Text>
             </TouchableOpacity>
@@ -871,12 +971,40 @@ const styles = StyleSheet.create({
     marginBottom: 18,
     color: '#333',
   },
+  settingsBlock: {
+    width: '100%',
+    marginBottom: 18,
+  },
   settingsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     width: '100%',
     marginBottom: 18,
+  },
+  languageChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    width: '100%',
+    marginTop: 10,
+  },
+  languageChip: {
+    backgroundColor: '#eee',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  languageChipActive: {
+    backgroundColor: '#2196F3',
+  },
+  languageChipText: {
+    color: '#333',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  languageChipTextActive: {
+    color: '#fff',
   },
   settingsLabel: {
     fontSize: 16,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SafeAreaView, StatusBar, View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import NotebookFolders from '../ui/folders';
 import WordSentenceScreen from '../reading/reading';
@@ -6,6 +6,9 @@ import WritingPracticeScreen from '../write/practice';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import GreetingComponent from '../ui/greeting';
 import GamesSection from '../games/GamesSection';
+import { appProfileService } from '../../services/appProfileService';
+import { progressTrackingService, AssistiveProgressSummary } from '../../services/progressTrackingService';
+import { piIntegrationService } from '../../services/piIntegrationService';
 
 
 interface HomeScreenProps {
@@ -21,6 +24,25 @@ const HomeScreen: React.FC<HomeScreenProps & { navigation: any }> = ({ onNewNote
   const [showReading, setShowReading] = useState(false);
   const [showWritingPractice, setShowWritingPractice] = useState(false);
   const [selectedTab, setSelectedTab] = useState<'main' | 'notebooks'>('main');
+  const [dashboard, setDashboard] = useState<AssistiveProgressSummary | null>(null);
+  const [preferredLanguage, setPreferredLanguage] = useState('en');
+  const [piConnected, setPiConnected] = useState(false);
+
+  useEffect(() => {
+    const loadDashboard = async () => {
+      const [profile, summary] = await Promise.all([
+        appProfileService.getProfile(),
+        progressTrackingService.getSummary(),
+      ]);
+      setPreferredLanguage(profile.preferredLanguage);
+      setDashboard(summary);
+      setPiConnected(await piIntegrationService.isConfigured());
+    };
+
+    loadDashboard().catch(error => console.error('Failed to load dashboard', error));
+    const unsubscribe = navigation.addListener('focus', loadDashboard);
+    return unsubscribe;
+  }, [navigation]);
 
   if (showGames) {
     return <GamesSection onBack={() => setShowGames(false)} />;
@@ -73,6 +95,22 @@ const HomeScreen: React.FC<HomeScreenProps & { navigation: any }> = ({ onNewNote
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         {selectedTab === 'main' && (
           <View style={styles.gridContainer}>
+            <View style={styles.dashboardRow}>
+              <View style={[styles.dashboardCard, styles.progressCard]}>
+                <Text style={styles.dashboardLabel}>Assistive Progress</Text>
+                <Text style={styles.dashboardValue}>{dashboard?.notesSaved ?? 0} notes saved</Text>
+                <Text style={styles.dashboardMeta}>
+                  {dashboard?.voiceCaptures ?? 0} voice captures • {dashboard?.recognizedWords ?? 0} words supported
+                </Text>
+              </View>
+              <View style={[styles.dashboardCard, styles.systemCard]}>
+                <Text style={styles.dashboardLabel}>System Status</Text>
+                <Text style={styles.dashboardValue}>{piConnected ? 'Pi 4 linked' : 'Pi 4 not set'}</Text>
+                <Text style={styles.dashboardMeta}>
+                  Language: {preferredLanguage.toUpperCase()} • Queue: {dashboard?.queuedSyncItems ?? 0}
+                </Text>
+              </View>
+            </View>
             {/* First Row */}
             <View style={styles.cardRow}>
               <TouchableOpacity 
@@ -177,6 +215,41 @@ const styles = StyleSheet.create({
   gridContainer: {
     marginBottom: 30,
     marginTop: -30,
+  },
+  dashboardRow: {
+    marginBottom: 16,
+    gap: 12,
+  },
+  dashboardCard: {
+    borderRadius: 18,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  progressCard: {
+    backgroundColor: '#FFF8E8',
+  },
+  systemCard: {
+    backgroundColor: '#E9F5FF',
+  },
+  dashboardLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#4A4A4A',
+    marginBottom: 6,
+  },
+  dashboardValue: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#1F2937',
+    marginBottom: 4,
+  },
+  dashboardMeta: {
+    fontSize: 14,
+    color: '#5F6C7B',
   },
   cardRow: {
     flexDirection: 'row',

@@ -5,9 +5,11 @@ export interface NotePagePayload {
 export interface NoteCapturePayload {
   version: 2;
   pages: NotePagePayload[];
+  languageCode?: string;
   recognizedText?: string;
   voiceTranscript?: string;
   combinedText?: string;
+  simplifiedText?: string;
   source?: 'tablet' | 'smart-pen' | 'hybrid';
   deviceId?: string;
   updatedAt: string;
@@ -15,8 +17,10 @@ export interface NoteCapturePayload {
 
 export function buildNotePayload(input: {
   pages: NotePagePayload[];
+  languageCode?: string;
   recognizedText?: string;
   voiceTranscript?: string;
+  simplifiedText?: string;
   source?: 'tablet' | 'smart-pen' | 'hybrid';
   deviceId?: string;
 }): NoteCapturePayload {
@@ -27,9 +31,11 @@ export function buildNotePayload(input: {
   return {
     version: 2,
     pages: input.pages,
+    languageCode: input.languageCode,
     recognizedText,
     voiceTranscript,
     combinedText,
+    simplifiedText: normalizeText(input.simplifiedText),
     source: input.source ?? 'tablet',
     deviceId: input.deviceId,
     updatedAt: new Date().toISOString(),
@@ -64,9 +70,11 @@ export function parseNotePayload(rawContent: string | null | undefined): NoteCap
       return {
         version: 2,
         pages,
+        languageCode: parsed.languageCode,
         recognizedText: normalizeText(parsed.recognizedText),
         voiceTranscript: normalizeText(parsed.voiceTranscript),
         combinedText: normalizeText(parsed.combinedText),
+        simplifiedText: normalizeText(parsed.simplifiedText),
         source: parsed.source,
         deviceId: parsed.deviceId,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
